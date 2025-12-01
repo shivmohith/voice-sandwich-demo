@@ -1,12 +1,15 @@
 from typing import Any
+import asyncio
 
 from dotenv import load_dotenv
 from typing_extensions import AsyncIterator
 from langchain_core.runnables import RunnableGenerator
 from langchain_core.messages import AIMessage
 from langchain.agents import create_agent
+import pyaudio
 
 from assemblyai_stt import microphone_and_transcribe
+from elevenlabs_tts import text_to_speech_stream
 
 load_dotenv()
 
@@ -30,10 +33,47 @@ async def _stream_agent(
             yield message.text
 
 
-# this is where we would call openai/11labs/etc. to generate text to speech
-async def _tts_stream(input: str) -> AsyncIterator[str]:
-    print(f"[DEBUG] _tts_stream: Got input: {input}")
-    yield "hello"
+# ElevenLabs TTS - synthesize and play audio
+async def _tts_stream(input: AsyncIterator[str]) -> AsyncIterator[str]:
+    """
+    Convert text to speech using ElevenLabs and play through speakers.
+
+    Args:
+        input: AsyncIterator of text strings from agent
+
+    Yields:
+        Status messages (for pipeline continuity)
+    """
+    print("[DEBUG] _tts_stream: Starting TTS")
+
+    # Initialize audio output
+    p = pyaudio.PyAudio()
+    audio_stream = p.open(
+        format=pyaudio.paInt16,
+        channels=1,
+        rate=16000,
+        output=True,
+        frames_per_buffer=1600
+    )
+    print("[DEBUG] Audio output stream opened")
+
+    try:
+        # Synthesize and play audio
+        async for audio_chunk in text_to_speech_stream(input):
+            # Play audio chunk through speakers
+            await asyncio.get_event_loop().run_in_executor(
+                None, audio_stream.write, audio_chunk
+            )
+
+        print("[DEBUG] _tts_stream: Finished playing audio")
+        yield "tts_complete"
+
+    finally:
+        # Clean up audio
+        audio_stream.stop_stream()
+        audio_stream.close()
+        p.terminate()
+        print("[DEBUG] Audio output closed")
 
 
 audio_stream = (
