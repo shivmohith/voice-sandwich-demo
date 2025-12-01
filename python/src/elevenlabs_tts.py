@@ -151,7 +151,8 @@ class ElevenLabsTTSTransform:
                         break
 
                     if "error" in message:
-                        print(f"ElevenLabs: Server error: {message['error']}")
+                        print(f"ElevenLabs: Server error: {message}")
+                        print(f"[DEBUG] Full error message: {json.dumps(message, indent=2)}")
 
                 except json.JSONDecodeError as e:
                     print(f"ElevenLabs: Error parsing message: {e}")
