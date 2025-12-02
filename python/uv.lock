@@ -707,13 +707,11 @@ wheels = [
 ]
 
 [[package]]
-name = "python-realtime"
+name = "python-voice-agent"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "assemblyai" },
     { name = "langchain" },
-    { name = "langchain-core" },
     { name = "pyaudio" },
     { name = "python-dotenv" },
     { name = "websockets" },
@@ -723,22 +721,24 @@ dependencies = [
 anthropic = [
     { name = "langchain-anthropic" },
 ]
+assemblyai = [
+    { name = "assemblyai" },
+]
 elevenlabs = [
     { name = "elevenlabs" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "assemblyai" },
+    { name = "assemblyai", marker = "extra == 'assemblyai'" },
     { name = "elevenlabs", marker = "extra == 'elevenlabs'" },
     { name = "langchain" },
     { name = "langchain-anthropic", marker = "extra == 'anthropic'" },
-    { name = "langchain-core" },
     { name = "pyaudio" },
     { name = "python-dotenv" },
     { name = "websockets" },
 ]
-provides-extras = ["elevenlabs", "anthropic"]
+provides-extras = ["assemblyai", "elevenlabs", "anthropic"]
 
 [[package]]
 name = "pyyaml"
