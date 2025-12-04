@@ -247,7 +247,7 @@ app.get(
     const transcriptEventStream = sttStream(inputStream);
     // STT events -> STT Events + Agent events
     const agentEventStream = agentStream(transcriptEventStream);
-    // STT events + Agent events -> TTS events + STT Events + Agent Events
+    // STT events + Agent events -> STT Events + Agent Events + TTS events
     const outputEventStream = ttsStream(agentEventStream);
 
     const flushPromise = iife(async () => {
