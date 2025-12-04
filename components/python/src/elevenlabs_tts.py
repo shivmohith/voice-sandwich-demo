@@ -76,7 +76,7 @@ class ElevenLabsTTS:
             if self._close_signal.is_set():
                 break
 
-            if self._ws and self._ws.close_code is not None:
+            if self._ws and self._ws.close_code is None:
                 self._connection_signal.clear()
                 try:
                     async for raw_message in self._ws:
