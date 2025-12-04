@@ -1,12 +1,12 @@
 import asyncio
 import contextlib
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 from uuid import uuid4
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from langchain.agents import create_agent
@@ -117,7 +117,7 @@ async def _stt_stream(audio_stream: AsyncIterator[bytes]) -> AsyncIterator[str]:
         await stt.close()
 
 
-async def _agent_stream(transcript_stream: AsyncIterator[str]) -> AsyncIterator[str]:
+async def _agent_stream(transcript_stream: AsyncIterator[str]) -> AsyncIterator[Optional[str]]:
     """
     Transform stream: Transcripts (String) → Agent Responses (String)
 
@@ -129,7 +129,8 @@ async def _agent_stream(transcript_stream: AsyncIterator[str]) -> AsyncIterator[
         transcript_stream: An async iterator of transcript strings from the STT stage
 
     Yields:
-        String chunks of the agent's response as they are generated
+        String chunks of the agent's response as they are generated, followed by
+        `None` sentinels to mark the end of each agent turn for downstream stages.
     """
     # Generate a unique thread ID for this conversation session
     # This allows the agent to maintain conversation context across multiple turns
@@ -150,10 +151,13 @@ async def _agent_stream(transcript_stream: AsyncIterator[str]) -> AsyncIterator[
         async for message, _ in stream:
             # Extract and yield the text content from each message chunk
             # This allows downstream stages to process the response incrementally
-            yield message.text
+            if message.text:
+                yield message.text
+        # Signal to downstream consumers that this agent response is complete
+        yield None
 
 
-async def _tts_stream(response_stream: AsyncIterator[str]) -> AsyncIterator[bytes]:
+async def _tts_stream(response_stream: AsyncIterator[Optional[str]]) -> AsyncIterator[bytes]:
     """
     Transform stream: Agent Response Text (String) → Audio (Bytes)
 
@@ -166,7 +170,8 @@ async def _tts_stream(response_stream: AsyncIterator[str]) -> AsyncIterator[byte
     - Consumer: Receives audio chunks from ElevenLabs and yields them downstream
 
     Args:
-        response_stream: An async iterator of text strings from the agent stage
+        response_stream: An async iterator of optional text strings from the agent stage
+            (includes None sentinels to indicate turn boundaries)
 
     Yields:
         PCM audio bytes (16-bit, mono, 16kHz) as they are received from ElevenLabs
@@ -182,14 +187,24 @@ async def _tts_stream(response_stream: AsyncIterator[str]) -> AsyncIterator[byte
         for synthesis. This allows audio generation to begin before the agent has
         finished generating all text.
         """
+        current_turn_active = False
+
         try:
             async for text in response_stream:
+                if text is None:
+                    if current_turn_active:
+                        await tts.finish_input()
+                        current_turn_active = False
+                    continue
+
                 # Send each text chunk to ElevenLabs for immediate synthesis
                 # ElevenLabs will begin generating audio as soon as it receives text
+                current_turn_active = True
                 await tts.send_text(text)
         finally:
-            # Signal to ElevenLabs that text sending is complete
-            await tts.close()
+            # If we're shutting down mid-turn, make sure ElevenLabs finishes cleanly
+            if current_turn_active:
+                await tts.finish_input()
 
     # Start the text sending task in the background
     # This allows us to simultaneously send text and receive audio

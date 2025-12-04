@@ -48,16 +48,30 @@ class ElevenLabsTTS:
         self._connection_signal = asyncio.Event()
         self._close_signal = asyncio.Event()
 
-    async def send_text(self, text: str) -> None:
-        if not text or not text.strip():
+    async def send_text(self, text: Optional[str]) -> None:
+        if text is None:
             return
 
         ws = await self._ensure_connection()
+
+        if text == "":
+            await ws.send(json.dumps({"text": ""}))
+            return
+
+        if not text.strip():
+            return
+
         payload = {
             "text": text,
             "try_trigger_generation": self.trigger_generation,
         }
         await ws.send(json.dumps(payload))
+
+    async def finish_input(self) -> None:
+        try:
+            await self.send_text("")
+        except websockets.exceptions.ConnectionClosed:
+            pass
 
     async def receive_audio(self) -> AsyncIterator[bytes]:
         while not self._close_signal.is_set():
@@ -97,6 +111,10 @@ class ElevenLabsTTS:
                             continue
                 except websockets.exceptions.ConnectionClosed:
                     print("ElevenLabs: WebSocket connection closed")
+                finally:
+                    if self._ws and self._ws.close_code is None:
+                        await self._ws.close()
+                    self._ws = None
 
     async def close(self) -> None:
         if self._ws and self._ws.close_code is None:
