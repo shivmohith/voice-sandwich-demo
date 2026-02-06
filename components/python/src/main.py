@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import os
 from pathlib import Path
 from typing import AsyncIterator
 from uuid import uuid4
@@ -13,9 +14,13 @@ from langchain.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableGenerator
 from langgraph.checkpoint.memory import InMemorySaver
 from starlette.staticfiles import StaticFiles
+from starlette.websockets import WebSocketDisconnect
 
 from assemblyai_stt import AssemblyAISTT
-from components.python.src.cartesia_tts import CartesiaTTS
+from cartesia_tts import CartesiaTTS
+from deepgram_stt import DeepgramSTT
+from deepgram_tts import DeepgramTTS
+from elevenlabs_tts import ElevenLabsTTS
 from events import (
     AgentChunkEvent,
     AgentEndEvent,
@@ -70,7 +75,7 @@ ${CARTESIA_TTS_SYSTEM_PROMPT}
 """
 
 agent = create_agent(
-    model="anthropic:claude-haiku-4-5",
+    model="openai:gpt-4o-mini",
     tools=[add_to_order, confirm_order],
     system_prompt=system_prompt,
     checkpointer=InMemorySaver(),
@@ -83,7 +88,8 @@ async def _stt_stream(
     """
     Transform stream: Audio (Bytes) → Voice Events (VoiceAgentEvent)
 
-    This function takes a stream of audio chunks and sends them to AssemblyAI for STT.
+    This function takes a stream of audio chunks and sends them to the configured
+    STT provider for transcription.
 
     It uses a producer-consumer pattern where:
     - Producer: A background task reads audio chunks from audio_stream and sends
@@ -99,23 +105,32 @@ async def _stt_stream(
     Yields:
         STT events (stt_chunk for partials, stt_output for final transcripts)
     """
-    stt = AssemblyAISTT(sample_rate=16000)
+    stt_provider = os.getenv("STT_PROVIDER", "deepgram").lower()
+    if stt_provider == "deepgram":
+        stt = DeepgramSTT(sample_rate=16000)
+    elif stt_provider == "assemblyai":
+        stt = AssemblyAISTT(sample_rate=16000)
+    else:
+        raise ValueError(
+            "Unsupported STT_PROVIDER. Use 'deepgram' or 'assemblyai'. "
+            f"Got: {stt_provider}"
+        )
 
     async def send_audio():
         """
-        Background task that pumps audio chunks to AssemblyAI.
+        Background task that pumps audio chunks to the STT provider.
 
         This runs concurrently with the main coroutine, continuously reading
-        audio chunks from the input stream and forwarding them to AssemblyAI.
+        audio chunks from the input stream and forwarding them to the STT provider.
         When the input stream ends, it signals completion by closing the
         WebSocket connection.
         """
         try:
-            # Stream each audio chunk to AssemblyAI as it arrives
+            # Stream each audio chunk to the STT provider as it arrives
             async for audio_chunk in audio_stream:
                 await stt.send_audio(audio_chunk)
         finally:
-            # Signal to AssemblyAI that audio streaming is complete
+            # Signal to the STT provider that audio streaming is complete
             await stt.close()
 
     # Launch the audio sending task in the background
@@ -124,7 +139,7 @@ async def _stt_stream(
 
     try:
         # Consumer loop: receive and yield transcription events as they arrive
-        # from AssemblyAI. The receive_events() method listens on the WebSocket
+        # from the STT provider. The receive_events() method listens on the WebSocket
         # for transcript events and yields them as they become available.
         async for event in stt.receive_events():
             yield event
@@ -234,7 +249,18 @@ async def _tts_stream(
     Yields:
         All upstream events plus tts_chunk events for synthesized audio
     """
-    tts = CartesiaTTS()
+    tts_provider = os.getenv("TTS_PROVIDER", "deepgram").lower()
+    if tts_provider == "cartesia":
+        tts = CartesiaTTS()
+    elif tts_provider == "deepgram":
+        tts = DeepgramTTS()
+    elif tts_provider == "elevenlabs":
+        tts = ElevenLabsTTS()
+    else:
+        raise ValueError(
+            "Unsupported TTS_PROVIDER. Use 'cartesia', 'deepgram', or 'elevenlabs'. "
+            f"Got: {tts_provider}"
+        )
 
     async def process_upstream() -> AsyncIterator[VoiceAgentEvent]:
         """
@@ -281,15 +307,23 @@ async def websocket_endpoint(websocket: WebSocket):
 
     async def websocket_audio_stream() -> AsyncIterator[bytes]:
         """Async generator that yields audio bytes from the websocket."""
-        while True:
-            data = await websocket.receive_bytes()
-            yield data
+        try:
+            while True:
+                data = await websocket.receive_bytes()
+                yield data
+        except WebSocketDisconnect:
+            # Client disconnected; end the audio stream gracefully.
+            return
 
     output_stream = pipeline.atransform(websocket_audio_stream())
 
     # Process all events from the pipeline, sending events back to the client
-    async for event in output_stream:
-        await websocket.send_json(event_to_dict(event))
+    try:
+        async for event in output_stream:
+            await websocket.send_json(event_to_dict(event))
+    except WebSocketDisconnect:
+        # Client disconnected while sending events; exit gracefully.
+        return
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
