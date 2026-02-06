@@ -125,3 +125,18 @@ The pipeline communicates via a unified event stream:
 | `tool_result` | Agent → Client | Tool execution result |
 | `agent_end` | Agent → TTS | Signals end of agent turn |
 | `tts_chunk` | TTS → Client | Audio chunk for playback |
+
+## Voice Evals (Audio-Only)
+
+An audio-only, provider-agnostic eval harness lives under `components/python/src/voice_evals`.
+It drives the agent under test via WebSocket and stores all audio + event logs for
+manual review.
+
+Example config: `components/python/voice_evals_config.toml`
+
+Run (from repo root):
+
+```bash
+cd components/python
+uv run python src/voice_evals/run.py --config voice_evals_config.toml
+```

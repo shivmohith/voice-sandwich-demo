@@ -1,0 +1,61 @@
+[run]
+name = ""
+results_dir = "evals/results"
+max_turns = 2
+end_token = "END_CALL"
+
+[audio]
+input_format = "pcm16"
+input_sample_rate_hz = 16000
+output_format = "pcm16"
+output_sample_rate_hz = 24000
+chunk_ms = 20
+real_time = true
+silence_padding_ms = 200
+pause_after_turn_ms = 300
+assistant_idle_timeout_ms = 800
+
+[agent_ws]
+url = "ws://localhost:8000/ws"
+schema = "voice_agent_v1"
+input_mode = "raw_audio"
+output_mode = "json_events"
+tts_chunk_field = "audio"
+
+[simulator]
+mode = "stt_model_tts"
+system_prompt = """You are the user in a voice call.\nStay in character and only say what the user would say.\nGoal: order a turkey sandwich with lettuce.\nEnd the call by saying END_CALL."""
+start_prompt = "Begin the conversation as the user."
+model = "openai:gpt-4o-mini"
+voice = ""
+
+# [simulator.tts]
+# provider = "cartesia"
+
+# [simulator.tts.options]
+# These map to CartesiaTTS init kwargs.
+# sample_rate = 16000
+# encoding = "pcm_s16le"
+
+[simulator.stt]
+provider = "deepgram"
+
+# Deepgram TTS example (if you want to switch providers):
+[simulator.tts]
+provider = "deepgram"
+
+[simulator.tts.options]
+model = "aura-asteria-en"
+encoding = "linear16"
+sample_rate = 24000
+
+# Realtime simulator example:
+# [simulator]
+# mode = "realtime"
+# system_prompt = "Your user persona..."
+#
+# [simulator.realtime]
+# adapter = "my_package.my_adapter:MyRealtimeSimulator"
+# [simulator.realtime.options]
+# api_key = "..."
+# model = "..."

@@ -16,6 +16,7 @@ from typing import AsyncIterator, Optional
 from urllib.parse import urlencode
 
 import websockets
+from websockets.exceptions import InvalidStatus
 from websockets.client import WebSocketClientProtocol
 
 from events import TTSChunkEvent
@@ -31,7 +32,7 @@ class DeepgramTTS:
         api_key: Optional[str] = None,
         model: str = "aura-asteria-en",
         encoding: str = "linear16",
-        container: str = "none",
+        container: Optional[str] = None,
         sample_rate: int = 24000,
         mip_opt_out: Optional[bool] = None,
     ):
@@ -41,7 +42,8 @@ class DeepgramTTS:
 
         self.model = os.getenv("DEEPGRAM_TTS_MODEL", model)
         self.encoding = os.getenv("DEEPGRAM_TTS_ENCODING", encoding)
-        self.container = os.getenv("DEEPGRAM_TTS_CONTAINER", container)
+        container_env = os.getenv("DEEPGRAM_TTS_CONTAINER")
+        self.container = container_env if container_env is not None else container
         self.sample_rate = int(os.getenv("DEEPGRAM_TTS_SAMPLE_RATE", sample_rate))
         mip_env = os.getenv("DEEPGRAM_TTS_MIP_OPT_OUT")
         if mip_env is not None:
@@ -127,16 +129,23 @@ class DeepgramTTS:
         params = {
             "model": self.model,
             "encoding": self.encoding,
-            "container": self.container,
             "sample_rate": self.sample_rate,
         }
+        if self.container:
+            params["container"] = self.container
         if self.mip_opt_out is not None:
             params["mip_opt_out"] = str(self.mip_opt_out).lower()
 
         url = f"wss://api.deepgram.com/v1/speak?{urlencode(params)}"
-        self._ws = await websockets.connect(
-            url, additional_headers={"Authorization": f"Token {self.api_key}"}
-        )
+        try:
+            self._ws = await websockets.connect(
+                url, additional_headers={"Authorization": f"Token {self.api_key}"}
+            )
+        except InvalidStatus as exc:
+            raise RuntimeError(
+                "Deepgram TTS websocket handshake failed. Check DEEPGRAM_API_KEY and "
+                "DEEPGRAM_TTS_* settings (model/encoding/container/sample_rate)."
+            ) from exc
 
         self._connection_signal.set()
         return self._ws
