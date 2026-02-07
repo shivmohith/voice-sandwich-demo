@@ -17,10 +17,8 @@ from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocketDisconnect
 
 from assemblyai_stt import AssemblyAISTT
-from cartesia_tts import CartesiaTTS
 from deepgram_stt import DeepgramSTT
 from deepgram_tts import DeepgramTTS
-from elevenlabs_tts import ElevenLabsTTS
 from events import (
     AgentChunkEvent,
     AgentEndEvent,
@@ -31,7 +29,7 @@ from events import (
 )
 from utils import merge_async_iters
 
-load_dotenv()
+load_dotenv(override=True)
 
 # Static files are served from the shared web build output
 STATIC_DIR = Path(__file__).parent.parent.parent / "web" / "dist"
@@ -70,8 +68,6 @@ Be concise and friendly.
 Available toppings: lettuce, tomato, onion, pickles, mayo, mustard.
 Available meats: turkey, ham, roast beef.
 Available cheeses: swiss, cheddar, provolone.
-
-${CARTESIA_TTS_SYSTEM_PROMPT}
 """
 
 agent = create_agent(
@@ -107,7 +103,7 @@ async def _stt_stream(
     """
     stt_provider = os.getenv("STT_PROVIDER", "deepgram").lower()
     if stt_provider == "deepgram":
-        stt = DeepgramSTT(sample_rate=16000)
+        stt = DeepgramSTT(sample_rate=16000, endpointing=500)
     elif stt_provider == "assemblyai":
         stt = AssemblyAISTT(sample_rate=16000)
     else:
@@ -264,25 +260,32 @@ async def _tts_stream(
 
     async def process_upstream() -> AsyncIterator[VoiceAgentEvent]:
         """
-        Process upstream events, yielding them while sending text to Cartesia.
+        Process upstream events, yielding them while sending text to TTS.
 
         This async generator serves two purposes:
         1. Pass through all upstream events (stt_chunk, stt_output, agent_chunk)
            so downstream consumers can observe the full event stream.
-        2. Buffer agent_chunk text and send to Cartesia when agent_end arrives.
-           This ensures the full response is sent at once for better TTS quality.
+        2. Buffer agent_chunk text and send to TTS when agent_end arrives.
+           agent_end is delayed until TTS finishes generating audio, so the
+           event order seen by consumers is: tts_chunks → agent_end.
         """
         buffer: list[str] = []
         async for event in event_stream:
-            # Pass through all events to downstream consumers
-            yield event
             # Buffer agent text chunks
             if event.type == "agent_chunk":
+                yield event
                 buffer.append(event.text)
-            # Send all buffered text to Cartesia when agent finishes
-            if event.type == "agent_end":
+            elif event.type == "agent_end":
+                # Send text to TTS and wait for all audio to be generated
+                # before yielding agent_end. This ensures tts_chunks arrive
+                # before agent_end, so consumers know audio is complete.
                 await tts.send_text("".join(buffer))
+                await tts.flush()
                 buffer = []
+                yield event
+            else:
+                # Pass through all other events unchanged
+                yield event
 
     try:
         # Merge the processed upstream events with TTS audio events
@@ -321,9 +324,14 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         async for event in output_stream:
             await websocket.send_json(event_to_dict(event))
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError):
         # Client disconnected while sending events; exit gracefully.
-        return
+        pass
+    finally:
+        # Explicitly close the generator pipeline to prevent GeneratorExit
+        # propagation during garbage collection.
+        with contextlib.suppress(Exception):
+            await output_stream.aclose()
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

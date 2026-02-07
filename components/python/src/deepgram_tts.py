@@ -54,6 +54,7 @@ class DeepgramTTS:
         self._ws = None
         self._connection_signal = asyncio.Event()
         self._close_signal = asyncio.Event()
+        self._flush_event = asyncio.Event()
 
     async def send_text(self, text: Optional[str]) -> None:
         if text is None:
@@ -62,6 +63,7 @@ class DeepgramTTS:
         if not text.strip():
             return
 
+        self._flush_event.clear()
         ws = await self._ensure_connection()
         await ws.send(json.dumps({"type": "Speak", "text": text}))
         await ws.send(json.dumps({"type": "Flush"}))
@@ -101,14 +103,18 @@ class DeepgramTTS:
                         message_type = message.get("type")
                         if message_type in {"Warning", "Error"}:
                             print(f"[DEBUG] DeepgramTTS {message_type}: {message}")
-                        # "Flushed" indicates end of current buffer, but the
-                        # websocket can stay open for subsequent turns.
+                        elif message_type == "Flushed":
+                            self._flush_event.set()
                 except websockets.exceptions.ConnectionClosed:
                     print("DeepgramTTS: WebSocket connection closed")
                 finally:
                     if self._ws and self._ws.close_code is None:
                         await self._ws.close()
                     self._ws = None
+
+    async def flush(self) -> None:
+        """Wait until all audio for the current send_text() call has been generated."""
+        await self._flush_event.wait()
 
     async def close(self) -> None:
         if self._ws and self._ws.close_code is None:
