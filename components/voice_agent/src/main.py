@@ -82,7 +82,7 @@ async def _stt_stream(
 ) -> AsyncIterator[VoiceAgentEvent]:
     stt_provider = os.getenv("STT_PROVIDER", "deepgram").lower()
     if stt_provider == "deepgram":
-        stt = DeepgramSTT(sample_rate=16000, endpointing=500)
+        stt = DeepgramSTT(sample_rate=16000, endpointing=500, model="nova-3-general")
     elif stt_provider == "assemblyai":
         stt = AssemblyAISTT(sample_rate=16000)
     else:

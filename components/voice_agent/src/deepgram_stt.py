@@ -40,7 +40,7 @@ class DeepgramSTT:
         self.sample_rate = sample_rate
         self.encoding = encoding
         self.channels = channels
-        self.model = model or os.getenv("DEEPGRAM_MODEL") or "nova-2"
+        self.model = model or os.getenv("DEEPGRAM_MODEL") or "nova-3-general"
         self.interim_results = interim_results
         self.punctuate = punctuate
         self.smart_format = smart_format
