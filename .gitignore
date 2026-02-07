@@ -46,9 +46,9 @@ lerna-debug.log*
 *.sln
 *.sw?
 
-components/python/evals/results/
-components/python/evals/results-v2/
+components/voice_agent/evals/results/
+components/voice_agent/evals/results-v2/
 
-components/pipecat-quickstart/output_audio/
-components/pipecat-quickstart/audio_turns/
-components/pipecat-quickstart/simulation_audio/
+components/user_simulation/output_audio/
+components/user_simulation/audio_turns/
+components/user_simulation/simulation_audio/
