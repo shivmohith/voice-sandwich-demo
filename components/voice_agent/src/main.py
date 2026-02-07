@@ -147,12 +147,8 @@ async def _tts_stream(
     event_stream: AsyncIterator[VoiceAgentEvent],
 ) -> AsyncIterator[VoiceAgentEvent]:
     tts_provider = os.getenv("TTS_PROVIDER", "deepgram").lower()
-    if tts_provider == "cartesia":
-        tts = CartesiaTTS()
-    elif tts_provider == "deepgram":
+    if tts_provider == "deepgram":
         tts = DeepgramTTS()
-    elif tts_provider == "elevenlabs":
-        tts = ElevenLabsTTS()
     else:
         raise ValueError(f"Unsupported TTS_PROVIDER: {tts_provider}")
 

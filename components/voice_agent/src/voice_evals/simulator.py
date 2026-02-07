@@ -16,9 +16,7 @@ from deepgram_stt import DeepgramSTT
 from events import STTOutputEvent
 from voice_evals.audio_utils import chunk_audio, compute_bytes_per_chunk
 from voice_evals.config import AudioConfig, SimulatorConfig
-from cartesia_tts import CartesiaTTS
 from deepgram_tts import DeepgramTTS
-from elevenlabs_tts import ElevenLabsTTS
 
 logger = logging.getLogger(__name__)
 
@@ -96,26 +94,6 @@ async def _collect_tts_audio(tts, *, idle_timeout_ms: Optional[int] = None) -> b
     return bytes(audio)
 
 
-class CartesiaTTSAdapter(TTSAdapter):
-    def __init__(self, **options: Any) -> None:
-        self._options = options
-
-    async def synthesize(self, text: str) -> bytes:
-        tts = CartesiaTTS(**self._options)
-        await tts.send_text(text)
-        return await _collect_tts_audio(tts)
-
-
-class ElevenLabsTTSAdapter(TTSAdapter):
-    def __init__(self, **options: Any) -> None:
-        self._options = options
-
-    async def synthesize(self, text: str) -> bytes:
-        tts = ElevenLabsTTS(**self._options)
-        await tts.send_text(text)
-        return await _collect_tts_audio(tts)
-
-
 class DeepgramTTSAdapter(TTSAdapter):
     def __init__(self, *, idle_timeout_ms: int = 800, **options: Any) -> None:
         self._options = options
@@ -177,15 +155,6 @@ def _build_tts_adapter(
 ) -> TTSAdapter:
     provider = config.tts.provider.lower()
     options = dict(config.tts.options)
-    if provider in {"cartesia", "elevenlabs"} and config.voice:
-        options.setdefault("voice_id", config.voice)
-    if provider == "cartesia":
-        options.setdefault("sample_rate", audio.input_sample_rate_hz)
-        options.setdefault("encoding", "pcm_s16le")
-        return CartesiaTTSAdapter(**options)
-    if provider == "elevenlabs":
-        options.setdefault("output_format", f"pcm_{audio.input_sample_rate_hz}")
-        return ElevenLabsTTSAdapter(**options)
     if provider == "deepgram":
         # Accept Cartesia-style aliases in config and normalize for Deepgram.
         alias_encoding = str(options.get("encoding", "")).strip().lower()

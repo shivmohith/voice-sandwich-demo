@@ -29,18 +29,9 @@ start_prompt = "Begin the conversation as the user."
 model = "openai:gpt-4o-mini"
 voice = ""
 
-# [simulator.tts]
-# provider = "cartesia"
-
-# [simulator.tts.options]
-# These map to CartesiaTTS init kwargs.
-# sample_rate = 16000
-# encoding = "pcm_s16le"
-
 [simulator.stt]
 provider = "deepgram"
 
-# Deepgram TTS example (if you want to switch providers):
 [simulator.tts]
 provider = "deepgram"
 
