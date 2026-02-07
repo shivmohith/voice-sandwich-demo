@@ -1,0 +1,20 @@
+[project]
+name = "voice-agent-pipecat"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+  "pipecat-ai[deepgram,openai,websocket]",
+  "python-dotenv>=1.0.0",
+  "loguru>=0.7.3",
+]
+
+[dependency-groups]
+dev = [
+  "ruff>=0.12.11,<1",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
