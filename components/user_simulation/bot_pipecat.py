@@ -94,6 +94,9 @@ class SimulationAudioRecorder:
             self._agent_audio_chunks.append(frame.audio)
             self._agent_sample_rate = frame.sample_rate
 
+    def start_agent_capture(self):
+        self._agent_audio_chunks.clear()
+
     def append_sim_user_audio(self, frame: OutputAudioRawFrame):
         if frame.audio:
             self._sim_user_audio_chunks.append(frame.audio)
@@ -142,21 +145,78 @@ class SimulationAudioRecorder:
 
 
 class IncomingAudioRecorder(FrameProcessor):
-    def __init__(self, recorder: SimulationAudioRecorder):
+    def __init__(
+        self,
+        recorder: SimulationAudioRecorder,
+        *,
+        silence_ms: float = 700.0,
+        rms_threshold: float = 250.0,
+    ):
         super().__init__()
         self._recorder = recorder
         self._on_activity: Optional[Callable[[], None]] = None
+        self._on_turn_complete: Optional[Callable[[int], Awaitable[None]]] = None
+        self._silence_ms = silence_ms
+        self._rms_threshold = rms_threshold
+        self._agent_speaking = False
+        self._silence_accum_ms = 0.0
 
     def set_activity_callback(self, callback: Callable[[], None]):
         self._on_activity = callback
+
+    def set_turn_complete_callback(self, callback: Callable[[int], Awaitable[None]]):
+        self._on_turn_complete = callback
+
+    def _compute_rms(self, audio: bytes) -> float:
+        if len(audio) < 2:
+            return 0.0
+        samples = memoryview(audio).cast("h")
+        if not samples:
+            return 0.0
+        sum_sq = 0.0
+        for s in samples:
+            sum_sq += float(s) * float(s)
+        return (sum_sq / len(samples)) ** 0.5
+
+    def _frame_duration_ms(self, frame: InputAudioRawFrame) -> float:
+        sample_rate = frame.sample_rate if frame.sample_rate > 0 else 16000
+        channels = frame.num_channels if frame.num_channels > 0 else 1
+        num_samples = len(frame.audio) / (2 * channels)
+        return (num_samples / sample_rate) * 1000.0
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, InputAudioRawFrame):
-            self._recorder.append_agent_audio(frame)
             if self._on_activity:
                 self._on_activity()
+
+            rms = self._compute_rms(frame.audio)
+            voiced = rms >= self._rms_threshold
+            frame_ms = self._frame_duration_ms(frame)
+
+            if voiced and not self._agent_speaking:
+                self._agent_speaking = True
+                self._silence_accum_ms = 0.0
+                self._recorder.start_agent_capture()
+                logger.info(
+                    f"[SIMULATOR AGENT AUDIO] speech started (rms={rms:.1f} threshold={self._rms_threshold})"
+                )
+
+            if self._agent_speaking:
+                self._recorder.append_agent_audio(frame)
+                if voiced:
+                    self._silence_accum_ms = 0.0
+                else:
+                    self._silence_accum_ms += frame_ms
+                    if self._silence_accum_ms >= self._silence_ms:
+                        self._agent_speaking = False
+                        self._silence_accum_ms = 0.0
+                        turn = self._recorder.flush_agent_for_current_exchange()
+                        if turn is not None:
+                            logger.info(f"[SIMULATOR TURN] agent audio completed for turn={turn}")
+                            if self._on_turn_complete:
+                                await self._on_turn_complete(turn)
 
         await self.push_frame(frame, direction)
 
@@ -181,10 +241,6 @@ class OutgoingAudioRecorder(FrameProcessor):
             self._recorder.append_sim_user_audio(frame)
             if self._on_activity:
                 self._on_activity()
-        elif isinstance(frame, BotStartedSpeakingFrame):
-            if self._on_activity:
-                self._on_activity()
-            self._recorder.flush_agent_for_current_exchange()
         elif isinstance(frame, BotStoppedSpeakingFrame):
             if self._on_activity:
                 self._on_activity()
@@ -201,11 +257,19 @@ async def main():
     uri = os.getenv("AGENT_WS_URL", "ws://localhost:8765")
     max_turns = int(os.getenv("MAX_TURNS", "2"))
     idle_timeout_secs = float(os.getenv("SIMULATOR_IDLE_TIMEOUT_SECS", "20"))
+    post_max_turn_idle_secs = float(os.getenv("POST_MAX_TURN_IDLE_TIMEOUT_SECS", "3.0"))
+    agent_silence_ms = float(os.getenv("AGENT_AUDIO_SILENCE_MS", "1500"))
+    agent_rms_threshold = float(os.getenv("AGENT_AUDIO_RMS_THRESHOLD", "250"))
     simulation_audio_dir = os.getenv("SIMULATION_AUDIO_DIR", "simulation_audio")
 
     logger.info(f"Pipecat simulator connecting to: {uri}")
     logger.info(
-        f"Simulator limits: max_turns={max_turns} idle_timeout_secs={idle_timeout_secs}"
+        "Simulator limits: "
+        f"max_turns={max_turns} "
+        f"idle_timeout_secs={idle_timeout_secs} "
+        f"post_max_turn_idle_secs={post_max_turn_idle_secs} "
+        f"agent_silence_ms={agent_silence_ms} "
+        f"agent_rms_threshold={agent_rms_threshold}"
     )
 
     transport = PipecatWSAgentTransport(uri=uri)
@@ -220,7 +284,11 @@ async def main():
     )
     llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4o-mini")
 
-    incoming_audio_recorder = IncomingAudioRecorder(audio_recorder)
+    incoming_audio_recorder = IncomingAudioRecorder(
+        audio_recorder,
+        silence_ms=agent_silence_ms,
+        rms_threshold=agent_rms_threshold,
+    )
     transcript_logger = TranscriptionLogger(side="SIMULATOR")
     outgoing_audio_recorder = OutgoingAudioRecorder(audio_recorder)
 
@@ -250,6 +318,7 @@ async def main():
 
     shutdown_started = False
     last_activity_ts = time.monotonic()
+    max_turns_reached = False
 
     def mark_activity():
         nonlocal last_activity_ts
@@ -268,10 +337,20 @@ async def main():
     incoming_audio_recorder.set_activity_callback(mark_activity)
     outgoing_audio_recorder.set_activity_callback(mark_activity)
 
+    async def on_agent_turn_completed(turn_count: int):
+        if max_turns_reached and turn_count >= max_turns:
+            await stop_simulation("max turns reached and final exchange completed")
+
+    incoming_audio_recorder.set_turn_complete_callback(on_agent_turn_completed)
+
     async def on_sim_user_turn_completed(turn_count: int):
+        nonlocal max_turns_reached
         logger.info(f"[SIMULATOR TURN] completed={turn_count}/{max_turns}")
         if max_turns > 0 and turn_count >= max_turns:
-            await stop_simulation(f"max turns reached ({turn_count})")
+            max_turns_reached = True
+            logger.info(
+                "Reached MAX_TURNS on user side; waiting for agent reply completion before stopping."
+            )
 
     outgoing_audio_recorder.set_turn_complete_callback(on_sim_user_turn_completed)
 
@@ -294,6 +373,14 @@ async def main():
         while not shutdown_started:
             await asyncio.sleep(1.0)
             idle_for = time.monotonic() - last_activity_ts
+            if (
+                max_turns_reached
+                and idle_for >= post_max_turn_idle_secs
+            ):
+                await stop_simulation(
+                    "max turns reached and timeout waiting for final agent turn completion"
+                )
+                return
             if idle_for >= idle_timeout_secs:
                 await stop_simulation(f"idle timeout reached ({idle_for:.1f}s)")
                 return

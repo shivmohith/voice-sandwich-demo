@@ -1,6 +1,7 @@
 import asyncio
 import os
 
+from deepgram import LiveOptions
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -56,6 +57,8 @@ async def main() -> None:
 
     host = os.getenv("PIPECAT_AGENT_HOST", "0.0.0.0")
     port = int(os.getenv("PIPECAT_AGENT_PORT", "8765"))
+    input_sample_rate = int(os.getenv("PIPECAT_AGENT_INPUT_SAMPLE_RATE", "16000"))
+    output_sample_rate = int(os.getenv("PIPECAT_AGENT_TTS_SAMPLE_RATE", "16000"))
 
     transport = WebsocketServerTransport(
         host=host,
@@ -68,12 +71,28 @@ async def main() -> None:
         ),
     )
 
-    stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
+    stt = DeepgramSTTService(
+        api_key=os.getenv("DEEPGRAM_API_KEY"),
+        sample_rate=input_sample_rate,
+        live_options=LiveOptions(
+            encoding="linear16",
+            channels=1,
+            model=os.getenv("DEEPGRAM_STT_MODEL", "nova-3-general"),
+            interim_results=True,
+            smart_format=True,
+            punctuate=True,
+            profanity_filter=True,
+            # Needed so Deepgram emits utterance boundaries while stream stays open.
+            endpointing=int(os.getenv("DEEPGRAM_STT_ENDPOINTING_MS", "500")),
+            utterance_end_ms=str(int(os.getenv("DEEPGRAM_STT_UTTERANCE_END_MS", "1000"))),
+            vad_events=True,
+        ),
+    )
     tts = DeepgramTTSService(
         api_key=os.getenv("DEEPGRAM_API_KEY"),
         model=os.getenv("DEEPGRAM_TTS_MODEL", "aura-asteria-en"),
         encoding="linear16",
-        sample_rate=int(os.getenv("PIPECAT_AGENT_TTS_SAMPLE_RATE", "16000")),
+        sample_rate=output_sample_rate,
     )
     llm = OpenAILLMService(
         api_key=os.getenv("OPENAI_API_KEY"),
@@ -99,7 +118,12 @@ async def main() -> None:
 
     task = PipelineTask(
         pipeline,
-        params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
+        params=PipelineParams(
+            enable_metrics=True,
+            enable_usage_metrics=True,
+            audio_in_sample_rate=input_sample_rate,
+            audio_out_sample_rate=output_sample_rate,
+        ),
         enable_rtvi=False,
     )
 
