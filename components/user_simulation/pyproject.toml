@@ -4,10 +4,11 @@ version = "0.1.0"
 description = "Quickstart example for building voice AI bots with Pipecat"
 requires-python = ">=3.10"
 dependencies = [
-    "pipecat-ai[deepgram,openai]",
+    "pipecat-ai[deepgram,elevenlabs,openai]==0.0.101",
     "pipecat-ai-cli",
     "pyaudio>=0.2.14",
     "loguru>=0.7.3",
+    "elevenlabs>=2.35.0",
 ]
 
 [dependency-groups]

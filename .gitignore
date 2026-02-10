@@ -52,3 +52,6 @@ components/voice_agent/evals/results-v2/
 components/user_simulation/output_audio/
 components/user_simulation/audio_turns/
 components/user_simulation/simulation_audio/
+
+# all wav files
+*.wav

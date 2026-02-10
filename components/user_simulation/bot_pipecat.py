@@ -39,7 +39,9 @@ WS_SYSTEM_PROMPT = """
 You are a customer at a sandwich shop. You are placing an order via voice.
 Be natural and conversational. Order a turkey sandwich with lettuce, tomato,
 and swiss cheese. If the agent asks for confirmation, confirm your order.
-Keep your responses short (1-2 sentences).
+Keep your responses short and concise.
+
+Start by saying "Hi, how are you? with a pause at the end" ONLY.
 """.strip()
 
 
@@ -86,6 +88,7 @@ class SimulationAudioRecorder:
         self._sim_user_audio_chunks: list[bytes] = []
         self._sim_user_sample_rate = 16000
         self._exchange_turn = 0
+        self._has_pending_user_turn = False
 
         logger.info(f"Saving simulation audio to: {self._output_dir}")
 
@@ -112,9 +115,10 @@ class SimulationAudioRecorder:
         logger.info(f"Saved audio: {path}")
 
     def flush_agent_for_current_exchange(self) -> Optional[int]:
-        if not self._agent_audio_chunks or self._exchange_turn <= 0:
+        if not self._agent_audio_chunks or not self._has_pending_user_turn:
             return None
 
+        self._exchange_turn += 1
         audio_data = b"".join(self._agent_audio_chunks)
         self._agent_audio_chunks.clear()
         self._save_wav(
@@ -122,21 +126,23 @@ class SimulationAudioRecorder:
             audio_data,
             self._agent_sample_rate,
         )
+        self._has_pending_user_turn = False
         return self._exchange_turn
 
     def complete_user_turn(self) -> Optional[int]:
         if not self._sim_user_audio_chunks:
             return None
 
-        self._exchange_turn += 1
+        pending_turn = self._exchange_turn + 1
         audio_data = b"".join(self._sim_user_audio_chunks)
         self._sim_user_audio_chunks.clear()
         self._save_wav(
-            f"turn_{self._exchange_turn:03d}_simulated_user.wav",
+            f"turn_{pending_turn:03d}_simulated_user.wav",
             audio_data,
             self._sim_user_sample_rate,
         )
-        return self._exchange_turn
+        self._has_pending_user_turn = True
+        return pending_turn
 
     def flush_all(self):
         if self._sim_user_audio_chunks:
@@ -252,8 +258,6 @@ class OutgoingAudioRecorder(FrameProcessor):
 
 
 async def main():
-    apply_broadcast_frame_instance_patch()
-
     uri = os.getenv("AGENT_WS_URL", "ws://localhost:8765")
     max_turns = int(os.getenv("MAX_TURNS", "2"))
     idle_timeout_secs = float(os.getenv("SIMULATOR_IDLE_TIMEOUT_SECS", "20"))
@@ -275,12 +279,15 @@ async def main():
     transport = PipecatWSAgentTransport(uri=uri)
     audio_recorder = SimulationAudioRecorder(simulation_audio_dir)
 
-    stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
+    stt = DeepgramSTTService(
+        api_key=os.getenv("DEEPGRAM_API_KEY"),
+        sample_rate=16000,
+    )
     tts = DeepgramTTSService(
         api_key=os.getenv("DEEPGRAM_API_KEY"),
         model="aura-asteria-en",
         encoding="linear16",
-        sample_rate=16000,
+        sample_rate=24000,
     )
     llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4o-mini")
 
@@ -318,7 +325,6 @@ async def main():
 
     shutdown_started = False
     last_activity_ts = time.monotonic()
-    max_turns_reached = False
 
     def mark_activity():
         nonlocal last_activity_ts
@@ -338,19 +344,14 @@ async def main():
     outgoing_audio_recorder.set_activity_callback(mark_activity)
 
     async def on_agent_turn_completed(turn_count: int):
-        if max_turns_reached and turn_count >= max_turns:
-            await stop_simulation("max turns reached and final exchange completed")
+        logger.info(f"[SIMULATOR TURN] completed={turn_count}/{max_turns}")
+        if max_turns > 0 and turn_count >= max_turns:
+            await stop_simulation("max turns reached and final agent reply delivered to simulator")
 
     incoming_audio_recorder.set_turn_complete_callback(on_agent_turn_completed)
 
     async def on_sim_user_turn_completed(turn_count: int):
-        nonlocal max_turns_reached
-        logger.info(f"[SIMULATOR TURN] completed={turn_count}/{max_turns}")
-        if max_turns > 0 and turn_count >= max_turns:
-            max_turns_reached = True
-            logger.info(
-                "Reached MAX_TURNS on user side; waiting for agent reply completion before stopping."
-            )
+        logger.info(f"[SIMULATOR USER] audio recorded for pending turn={turn_count}")
 
     outgoing_audio_recorder.set_turn_complete_callback(on_sim_user_turn_completed)
 
@@ -373,14 +374,6 @@ async def main():
         while not shutdown_started:
             await asyncio.sleep(1.0)
             idle_for = time.monotonic() - last_activity_ts
-            if (
-                max_turns_reached
-                and idle_for >= post_max_turn_idle_secs
-            ):
-                await stop_simulation(
-                    "max turns reached and timeout waiting for final agent turn completion"
-                )
-                return
             if idle_for >= idle_timeout_secs:
                 await stop_simulation(f"idle timeout reached ({idle_for:.1f}s)")
                 return
